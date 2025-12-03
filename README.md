@@ -87,3 +87,19 @@ Key details
 - FDE.funcStartFreOff: offset to function’s first FRE relative to start of FRE sub-section.
 - FRE start address width: 1/2/4 bytes chosen per-function via FDE info word (ADDR1/ADDR2/ADDR4).
 - FRE info word encodes CFA base (SP/FP), number of offsets, and offset size (1/2/4).
+
+Generating SFrame section (binutils wiki example)
+
+The GNU toolchain can emit `.sframe` from `cfi_*` directives when assembled with `--gsframe` (Binutils ≥ 2.41). Following the binutils wiki example:
+
+- Build a small test and have GAS generate `.sframe`:
+  - `gcc -O2 -fasynchronous-unwind-tables -Wa,--gsframe examples/test_sframe.c -o examples/test_sframe`
+- Dump the `.sframe` section using objdump (use the toolchain path you requested):
+  - `/usr/local/bin/x86_64-unknown-freebsd15.0-objdump --sframe examples/test_sframe`
+- Optionally extract the raw `.sframe` section and pretty-print it with the Nim tool:
+  - `/usr/local/bin/x86_64-unknown-freebsd15.0-objcopy --dump-section .sframe=examples/out.sframe examples/test_sframe`
+  - `nim c -r tools/sframe_dump.nim examples/out.sframe`
+
+Shortcut script
+
+- `examples/gen_sframe_example.sh` builds the sample C, runs objdump `--sframe`, extracts `.sframe`, and calls the Nim dumper if built.
