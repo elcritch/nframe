@@ -59,7 +59,7 @@ proc buildFrames(): seq[uint64] =
 
 var lastFrames: seq[uint64] = @[]
 
-proc nframe_entry_build*() {.exportc.} =
+proc nframe_entry_build*() =
   # Start from the caller frame (cdeep0): use level-1 frame/return address.
   let fp1 = cast[uint64](nframe_get_fp_n(1))
   let pc1 = cast[uint64](nframe_get_ra_n(1))
@@ -67,11 +67,19 @@ proc nframe_entry_build*() {.exportc.} =
   let sp1 = fp1
   lastFrames = buildFramesFrom(pc1, sp1, fp1)
 
-{.compile: "examples/cchain.c".}
-proc cdeep7() {.importc.}
+#proc cdeep7() {.importc.}
+proc deep0() = nframe_entry_build()
+proc deep1() = deep0()
+proc deep2() = deep1()
+proc deep3() = deep2()
+proc deep4() = deep3()
+proc deep5() = deep4()
+proc deep6() = deep5()
+proc deep7() = deep6()
+
 
 when isMainModule:
-  cdeep7()
+  deep7()
   let frames = lastFrames
   echo "Stack trace (top->bottom):"
   for i, pc in frames:
