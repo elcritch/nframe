@@ -40,3 +40,40 @@ Notes
 - AMD64 uses `header.cfaFixedRaOffset` for RA; AArch64 uses RA/FP offsets from FRE.
 - This is a minimal implementation for testing and experimentation; not a full tracer.
 
+SFrame section layout
+
+The `.sframe` section contains:
+
+- Preamble (4 bytes)
+  - `magic` (uint16 = 0xDEE2)
+  - `version` (uint8 = 2)
+  - `flags` (uint8)
+- Header (fixed 24 bytes after preamble; total 28) plus optional aux header
+  - `abiArch` (uint8)
+  - `cfaFixedFpOffset` (int8)
+  - `cfaFixedRaOffset` (int8)
+  - `auxHdrLen` (uint8)
+  - `numFdes` (uint32)
+  - `numFres` (uint32)
+  - `freLen` (uint32)
+  - `fdeOff` (uint32) — offset from end of header
+  - `freOff` (uint32) — offset from end of header
+- FDE sub-section: array of `numFdes` fixed 20-byte entries
+- FRE sub-section: `freLen` bytes (variable-sized entries)
+
+High-level diagram
+
+```
+| Preamble (4) | Header (24 + aux) | FDE array (20 * numFdes) | FRE bytes (freLen) |
+                                   ^ fdeOff=0 typically        ^ freOff = 20*numFdes
+```
+
+Key details
+
+- Endianness: all fields stored in target endianness; this impl uses host endianness for simplicity.
+- FDE.funcStartAddress:
+  - Absolute-from-section-start or PC-relative-from-field depending on `SFRAME_F_FDE_FUNC_START_PCREL` flag.
+- FDE.funcStartFreOff: offset to function’s first FRE relative to start of FRE sub-section.
+- FRE start address width: 1/2/4 bytes chosen per-function via FDE info word (ADDR1/ADDR2/ADDR4).
+- FRE info word encodes CFA base (SP/FP), number of offsets, and offset size (1/2/4).
+
