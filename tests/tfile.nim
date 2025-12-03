@@ -1,4 +1,4 @@
-import std/[unittest]
+import std/[unittest, options]
 import sframe
 
 suite "SFrame minimal":
@@ -148,3 +148,109 @@ suite "SFrame minimal":
     check dec.header.numFres == 2
     check fdeInfoGetFreType(dec.fdes[0].funcInfo) == sframeFreAddr1
     check dec.fres.len == 2
+
+  test "ABI offsets AMD64":
+    let hdr = SFrameHeader(
+      preamble: SFramePreamble(magic: SFRAME_MAGIC, version: SFRAME_VERSION_2, flags: uint8(SFRAME_F_FRAME_POINTER)),
+      abiArch: uint8(sframeAbiAmd64Little),
+      cfaFixedFpOffset: 0'i8,
+      cfaFixedRaOffset: -8'i8,
+      auxHdrLen: 0'u8,
+      auxData: @[]
+    )
+    let fre = SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 2, sframeFreOff1B), offsets: @[int32(16), int32(-16)])
+    let off = freOffsetsForAbi(sframeAbiAmd64Little, hdr, fre)
+    check off.cfaBase == sframeCfaBaseSp
+    check off.cfaFromBase == 16
+    check off.raFromCfa.get() == -8
+    check off.fpFromCfa.get() == -16
+
+  test "ABI offsets AArch64":
+    let hdr = SFrameHeader(
+      preamble: SFramePreamble(magic: SFRAME_MAGIC, version: SFRAME_VERSION_2, flags: 0),
+      abiArch: uint8(sframeAbiAarch64Little),
+      cfaFixedFpOffset: 0'i8,
+      cfaFixedRaOffset: 0'i8,
+      auxHdrLen: 0'u8,
+      auxData: @[]
+    )
+    let fre = SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 3, sframeFreOff2B), offsets: @[int32(32), int32(24), int32(16)])
+    let off = freOffsetsForAbi(sframeAbiAarch64Little, hdr, fre)
+    check off.cfaBase == sframeCfaBaseSp
+    check off.cfaFromBase == 32
+    check off.raFromCfa.get() == 24
+    check off.fpFromCfa.get() == 16
+
+  test "findFdeIndexByPc + pcToFre (PCINC)":
+    var sec = SFrameSection(
+      header: SFrameHeader(
+        preamble: SFramePreamble(magic: SFRAME_MAGIC, version: SFRAME_VERSION_2, flags: uint8(SFRAME_F_FDE_SORTED)),
+        abiArch: uint8(sframeAbiAmd64Little),
+        cfaFixedFpOffset: 0'i8,
+        cfaFixedRaOffset: -8'i8,
+        auxHdrLen: 0'u8,
+        auxData: @[]
+      ),
+      fdes: @[
+        SFrameFDE(funcStartAddress: 0x2000'i32, funcSize: 0x80, funcStartFreOff: 0, funcNumFres: 2, funcInfo: fdeInfo(sframeFreAddr1, sframeFdePcInc), funcRepSize: 0, funcPadding2: 0),
+      ],
+      fres: @[
+        SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(16)]),
+        SFrameFRE(startAddr: 0x10, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(24)])
+      ]
+    )
+    discard encodeSection(sec) # populates header.num* etc.
+    let sectionBase = 0x100000'u64
+    let pc = sectionBase + 0x2000'u64 + 0x18'u64
+    let fi = findFdeIndexByPc(sec, pc, sectionBase)
+    check fi == 0
+    let (found, fdeIdx, freLocalIdx, freGlobalIdx) = pcToFre(sec, pc, sectionBase)
+    check found and fdeIdx == 0 and freLocalIdx == 1 and freGlobalIdx == 1
+
+  test "pcToFre (PCMASK)":
+    var sec = SFrameSection(
+      header: SFrameHeader(
+        preamble: SFramePreamble(magic: SFRAME_MAGIC, version: SFRAME_VERSION_2, flags: uint8(SFRAME_F_FDE_SORTED)),
+        abiArch: uint8(sframeAbiAmd64Little),
+        cfaFixedFpOffset: 0'i8,
+        cfaFixedRaOffset: -8'i8,
+        auxHdrLen: 0'u8,
+        auxData: @[]
+      ),
+      fdes: @[
+        SFrameFDE(funcStartAddress: 0x3000'i32, funcSize: 0x80, funcStartFreOff: 0, funcNumFres: 2, funcInfo: fdeInfo(sframeFreAddr1, sframeFdePcMask), funcRepSize: 16, funcPadding2: 0),
+      ],
+      fres: @[
+        SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(16)]),
+        SFrameFRE(startAddr: 8, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(20)])
+      ]
+    )
+    discard encodeSection(sec)
+    let sectionBase = 0x100000'u64
+    let pc = sectionBase + 0x3000'u64 + 0x28'u64 # 0x28 % 16 == 8 -> second FRE
+    let (found, fdeIdx, freLocalIdx, freGlobalIdx) = pcToFre(sec, pc, sectionBase)
+    check found and fdeIdx == 0 and freLocalIdx == 1 and freGlobalIdx == 1
+
+  test "validateSection checks":
+    var sec = SFrameSection(
+      header: SFrameHeader(
+        preamble: SFramePreamble(magic: SFRAME_MAGIC, version: SFRAME_VERSION_2, flags: uint8(SFRAME_F_FDE_SORTED)),
+        abiArch: uint8(sframeAbiAmd64Little),
+        cfaFixedFpOffset: 0'i8,
+        cfaFixedRaOffset: -8'i8,
+        auxHdrLen: 0'u8,
+        auxData: @[]
+      ),
+      fdes: @[
+        SFrameFDE(funcStartAddress: 0x1000'i32, funcSize: 0x40, funcStartFreOff: 0, funcNumFres: 2, funcInfo: fdeInfo(sframeFreAddr1, sframeFdePcInc), funcRepSize: 0, funcPadding2: 0),
+        SFrameFDE(funcStartAddress: 0x1100'i32, funcSize: 0x20, funcStartFreOff: 0, funcNumFres: 1, funcInfo: fdeInfo(sframeFreAddr1, sframeFdePcInc), funcRepSize: 0, funcPadding2: 0)
+      ],
+      fres: @[
+        SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(16)]),
+        SFrameFRE(startAddr: 8, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(20)]),
+        SFrameFRE(startAddr: 0, info: freInfo(sframeCfaBaseSp, 1, sframeFreOff1B), offsets: @[int32(24)])
+      ]
+    )
+    discard encodeSection(sec)
+    let errs = validateSection(sec, sectionBase = 0x100000'u64, checkSorted = true)
+    check errs.len == 0

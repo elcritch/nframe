@@ -1,4 +1,5 @@
 import std/[strformat]
+import std/options
 
 # Helpers for host-endian encoding/decoding of integers
 proc putU16LE(buf: var openArray[byte]; idx: var int; v: uint16) {.inline.} =
@@ -72,6 +73,9 @@ const
   SFRAME_F_FDE_SORTED* = SFrameFlags(0x01'u8)
   SFRAME_F_FRAME_POINTER* = SFrameFlags(0x02'u8)
   SFRAME_F_FDE_FUNC_START_PCREL* = SFrameFlags(0x04'u8) # v2 errata 1
+
+proc hasFlag*(flags: SFrameFlags; flag: SFrameFlags): bool {.inline.} =
+  (uint8(flags) and uint8(flag)) != 0
 
 # 2.1 SFrame Preamble
 type
@@ -517,3 +521,157 @@ proc decodeSection*(bytes: openArray[byte]): SFrameSection =
   if fres.len != int(hdr.numFres):
     raise newException(ValueError, fmt"Decoded fres {fres.len} != header numFres {hdr.numFres}")
   SFrameSection(header: hdr, fdes: fdes, fres: fres)
+
+# ---- ABI-specific interpretation helpers ----
+
+type FreOffsets* = object
+  cfaBase*: SFrameCfaBase
+  cfaFromBase*: int32
+  raFromCfa*: Option[int32]
+  fpFromCfa*: Option[int32]
+
+proc freOffsetsForAbi*(abi: SFrameAbiArch; hdr: SFrameHeader; fre: SFrameFRE): FreOffsets =
+  ## Compute CFA/RA/FP offsets per ABI from a FRE and header.
+  result.cfaBase = fre.info.freInfoGetCfaBase()
+  if fre.offsets.len == 0:
+    raise newException(ValueError, "FRE has zero offsets; invalid")
+  result.cfaFromBase = fre.offsets[0]
+  case abi
+  of sframeAbiAmd64Little:
+    # RA fixed from header; FP in FRE if present
+    result.raFromCfa = some(int32(hdr.cfaFixedRaOffset))
+    if fre.offsets.len >= 2:
+      result.fpFromCfa = some(fre.offsets[1])
+  of sframeAbiAarch64Big, sframeAbiAarch64Little:
+    # RA and FP tracked in FRE when present (N == 3)
+    if fre.offsets.len >= 2:
+      result.raFromCfa = some(fre.offsets[1])
+    if fre.offsets.len >= 3:
+      result.fpFromCfa = some(fre.offsets[2])
+  of sframeAbiS390xBig:
+    # Minimal handling: follow similar pattern if present
+    if fre.offsets.len >= 2:
+      result.raFromCfa = some(fre.offsets[1])
+    if fre.offsets.len >= 3:
+      result.fpFromCfa = some(fre.offsets[2])
+  else:
+    discard
+
+# ---- Address computations and lookups ----
+
+proc headerByteLen*(h: SFrameHeader): int {.inline.} = sizeofSFrameHeaderFixed() + int(h.auxHdrLen)
+
+proc funcStartAddress*(sec: SFrameSection; fdeIdx: int; sectionBase: uint64): uint64 =
+  ## Compute function start virtual address for FDE index given section base address.
+  let hdr = sec.header
+  let fde = sec.fdes[fdeIdx]
+  let flags = SFrameFlags(hdr.preamble.flags)
+  let fs = uint64(cast[int64](fde.funcStartAddress))
+  if flags.hasFlag(SFRAME_F_FDE_FUNC_START_PCREL):
+    # Offset from the field itself
+    let fieldAddr = sectionBase + uint64(hdr.headerByteLen() + int(hdr.fdeOff) + fdeIdx * sizeofSFrameFDE())
+    result = fieldAddr + fs
+  else:
+    # Offset from start of SFrame section
+    result = sectionBase + fs
+
+proc funcFreStartIndex*(sec: SFrameSection; fdeIdx: int): int =
+  ## Compute the global index in sec.fres where fdeIdx's FREs begin.
+  var idx = 0
+  for i in 0 ..< fdeIdx:
+    idx += int(sec.fdes[i].funcNumFres)
+  idx
+
+proc findFdeIndexByPc*(sec: SFrameSection; pc: uint64; sectionBase: uint64): int =
+  ## Binary search FDE by PC. Returns -1 if not found.
+  if sec.fdes.len == 0: return -1
+  let flags = SFrameFlags(sec.header.preamble.flags)
+  # Expect sorted if flag set; we still binary search regardless.
+  var lo = 0
+  var hi = sec.fdes.len - 1
+  var res = -1
+  while lo <= hi:
+    let mid = (lo + hi) shr 1
+    let start = sec.funcStartAddress(mid, sectionBase)
+    let size = uint64(sec.fdes[mid].funcSize)
+    if pc < start:
+      if mid == 0: break
+      hi = mid - 1
+    elif pc >= start + size:
+      lo = mid + 1
+    else:
+      res = mid
+      break
+  res
+
+proc pcToFre*(sec: SFrameSection; pc: uint64; sectionBase: uint64): tuple[found: bool, fdeIdx: int, freLocalIdx: int, freGlobalIdx: int] =
+  ## Map a PC to the containing (FDE, FRE). Returns found=false if not matched.
+  let fi = sec.findFdeIndexByPc(pc, sectionBase)
+  if fi < 0: return (false, -1, -1, -1)
+  let fde = sec.fdes[fi]
+  let fstart = sec.funcStartAddress(fi, sectionBase)
+  var offWithin: uint64
+  let ftype = fde.funcInfo.fdeInfoGetFdeType()
+  case ftype
+  of sframeFdePcInc:
+    offWithin = pc - fstart
+  of sframeFdePcMask:
+    let rep = uint64(fde.funcRepSize)
+    if rep == 0: return (false, -1, -1, -1)
+    offWithin = (pc - fstart) mod rep
+
+  # Binary search in FREs for this function using startAddr
+  let freStart = sec.funcFreStartIndex(fi)
+  let n = int(fde.funcNumFres)
+  if n == 0: return (false, -1, -1, -1)
+  var lo = 0
+  var hi = n - 1
+  var best = -1
+  while lo <= hi:
+    let mid = (lo + hi) shr 1
+    let sa = uint64(sec.fres[freStart + mid].startAddr)
+    if sa <= offWithin:
+      best = mid
+      lo = mid + 1
+    else:
+      if mid == 0: break
+      hi = mid - 1
+  if best < 0: return (false, fi, -1, -1)
+  (true, fi, best, freStart + best)
+
+# ---- Validation ----
+
+proc validateSection*(sec: SFrameSection; sectionBase: uint64 = 0'u64; checkSorted: bool = false): seq[string] =
+  ## Return a list of validation errors; empty if valid.
+  var errs: seq[string] = @[]
+  let h = sec.header
+  if not h.preamble.isValid():
+    errs.add "Invalid preamble magic/version"
+  if int(h.numFdes) != sec.fdes.len:
+    errs.add fmt"Header numFdes={h.numFdes} but fdes.len={sec.fdes.len}"
+  var sumFres = 0
+  for f in sec.fdes: sumFres += int(f.funcNumFres)
+  if int(h.numFres) != sumFres or sec.fres.len != sumFres:
+    errs.add fmt"Header numFres={h.numFres}, sumFres={sumFres}, fres.len={sec.fres.len}"
+  # Per-function checks
+  var freIdx = 0
+  for i, fde in sec.fdes:
+    if fde.funcInfo.fdeInfoGetFdeType() == sframeFdePcMask and fde.funcRepSize == 0:
+      errs.add fmt"FDE[{i}] PCMASK rep_size is 0"
+    # Check FRE start addresses are non-decreasing
+    var lastSa: uint32 = 0
+    for j in 0 ..< int(fde.funcNumFres):
+      let fre = sec.fres[freIdx + j]
+      if j > 0 and fre.startAddr < lastSa:
+        errs.add fmt"FDE[{i}] FRE[{j}] startAddr not sorted"
+      lastSa = fre.startAddr
+    freIdx += int(fde.funcNumFres)
+  if checkSorted and SFrameFlags(h.preamble.flags).hasFlag(SFRAME_F_FDE_SORTED):
+    # Verify function starts are sorted w.r.t. provided sectionBase
+    var last: uint64 = 0
+    for i in 0 ..< sec.fdes.len:
+      let start = sec.funcStartAddress(i, sectionBase)
+      if i > 0 and start < last:
+        errs.add fmt"FDE start addresses not sorted at index {i}"
+      last = start
+  errs
