@@ -1,4 +1,4 @@
-import std/[os, osproc, strutils, strformat]
+import std/[os, osproc, strutils, strformat, sequtils]
 import sframe
 import sframe/amd64_walk
 
@@ -56,6 +56,19 @@ proc inner1(): seq[uint64] = inner2()
 
 when isMainModule:
   let frames = inner1()
-  echo "Stack trace PCs (top->bottom):"
-  for pc in frames:
-    echo fmt"  0x{pc.toHex.toLowerAscii()}"
+  echo "Stack trace (top->bottom):"
+  for i, pc in frames:
+    echo fmt"  {i:>2}: 0x{pc.toHex.toLowerAscii()}"
+  # Symbolize via addr2line
+  let exe = getAppFilename()
+  let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
+  let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
+  let cmd = addr2 & " -e " & exe & " -f -C -p " & addrArgs
+  try:
+    let sym = execProcess(cmd)
+    let lines = sym.splitLines().filterIt(it.len > 0)
+    echo "Symbols:"
+    for i, line in lines:
+      echo fmt"  {i:>2}: {line}"
+  except CatchableError as e:
+    echo "addr2line failed: ", e.msg
