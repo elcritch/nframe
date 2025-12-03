@@ -1,8 +1,8 @@
-import std/[unittest, options]
-import sframe, sframe/amd64_walk
+import std/[unittest]
+import sframe
+import sframe/amd64_walk
 
-suite "SFrame minimal":
-
+suite "AMD64 stack walking":
   test "Stack walk example AMD64":
     # Build a section with two functions (A and B), both PCINC, 1 FRE each.
     var sec = SFrameSection(
@@ -45,3 +45,4 @@ suite "SFrame minimal":
     check frames.len == 2
     check frames[0] == pcA
     check frames[1] == pcB
+
