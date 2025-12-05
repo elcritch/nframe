@@ -9,6 +9,7 @@ proc deep0() {.noinline.} =
   for i in 1..10:
     echo "i: ", $i
 
+
 proc deep1() {.noinline.} = deep0()
 proc deep2() {.noinline.} = deep1()
 proc deep3() {.noinline.} = deep2()

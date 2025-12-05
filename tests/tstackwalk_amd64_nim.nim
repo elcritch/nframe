@@ -7,6 +7,7 @@ import std/[unittest, os, osproc, strutils, strformat, sequtils, tables]
 type SymInfo = object
   start: uint64
   size: uint64
+  name: string   # function name (eg. "deep1")
 
 proc chooseTool(cands: openArray[string]): string =
   for p in cands:
@@ -71,7 +72,8 @@ proc parseDeepSymbols(exe: string): Table[int, SymInfo] =
     try:
       let start = parseHexInt(addrHex).uint64
       let size = parseHexInt(sizeHex).uint64
-      tbl[n] = SymInfo(start: start, size: size)
+      let fname = "deep" & $n
+      tbl[n] = SymInfo(start: start, size: size, name: fname)
     except CatchableError:
       discard
   result = tbl
@@ -125,6 +127,7 @@ suite "Nim override stackwalk (AMD64)":
       echo "Could not resolve deep symbols via objdump; got ", deepSyms.len, " entries"
       check deepSyms.len >= 7 # still enforce in CI environments with objdump
 
+    echo "Deep syms: ", deepSyms
     let runOut = runExample(exePath)
     check runOut.len > 0
     let pcs = parseBacktraceAddrs(runOut)
