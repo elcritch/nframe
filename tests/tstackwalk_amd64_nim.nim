@@ -108,15 +108,26 @@ suite "Nim override stackwalk (AMD64)":
       echo "Could not resolve deep symbols via objdump; got ", deepSyms.len, " entries"
       check deepSyms.len >= 7 # still enforce in CI environments with objdump
 
-    echo "Deep syms: ", deepSyms
+    echo "Deep syms: "
+    for pc, sym in deepSyms:
+      echo "sym: ", sym
+
     let runOut = runExample(exePath)
     check runOut.len > 0
     let backtracePcs = parseBacktraceAddrs(runOut)
     check backtracePcs.len > 0
-    echo "BT addrs: ", backtracePcs 
+    echo "BT addrs: "
+    for bt in backtracePcs:
+      echo "bt: ", bt
 
     # Map addresses to deepN indices and extract the subsequence of deep frames.
     for id, sym in deepSyms:
       echo "checking bactrace output for deep symbol: ", sym
       check sym.pc in backtracePcs 
+
+    for i, bt in backTracePcs:
+      if bt in deepSyms:
+        echo i, " bt: ", bt, " ", deepSyms[bt]
+      else:
+        echo i, " bt: ", bt, " ", "-"
 
