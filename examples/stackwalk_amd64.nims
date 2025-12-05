@@ -4,5 +4,5 @@ switch("cc", "gcc")
 #switch("define", "debug")
 switch("stackTrace", "off")
 switch("debugger", "native")
-switch("passC", "-O2 -Wa,--gsframe")
+switch("passC", "-O2 -Wa,--gsframe -fomit-frame-pointer")
 

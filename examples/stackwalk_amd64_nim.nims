@@ -6,3 +6,4 @@ switch("passC", "-fomit-frame-pointer")
 switch("debugger", "native")
 switch("define", "nimStackTraceOverride")
 switch("passC", "-O2 -Wa,--gsframe")
+
