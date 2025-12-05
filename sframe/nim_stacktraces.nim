@@ -98,12 +98,13 @@ proc loadSelfSFrame(): (SFrameSection, uint64) =
   (sec, base)
 
 proc ensureCache() =
-  if not gCache.loaded:
-    let (sec, base) = loadSelfSFrame()
-    if sec.header.preamble.isValid():
-      gCache.sec = sec
-      gCache.base = base
-      gCache.loaded = true
+  {.cast(gcsafe).}:
+    if not gCache.loaded:
+      let (sec, base) = loadSelfSFrame()
+      if sec.header.preamble.isValid():
+        gCache.sec = sec
+        gCache.base = base
+        gCache.loaded = true
 
 proc initSFrameCache*() =
   ## Initialize SFrame cache for the current process (best-effort).
@@ -130,34 +131,36 @@ when not declared(cuintptr_t):
 proc getProgramCounters*(maxLength: cint): seq[cuintptr_t] {.noinline, gcsafe.} =
   ## Return up to maxLength program counters, top->bottom.
   ## GC-safe variant that walks the frame-pointer chain without touching GC data.
-  var pcsOut: seq[cuintptr_t] = @[]
-  if maxLength <= 0: return pcsOut
-  var fp = cast[uint64](nframe_get_fp_1())
-  var pc = cast[uint64](nframe_get_ra_1())
-  var count = 0
-  while fp != 0'u64 and pc != 0'u64 and count < maxLength.int:
-    pcsOut.add(cast[cuintptr_t](pc))
-    let nextFpPtr = cast[ptr uint64](cast[pointer](fp))
-    let nextRaPtr = cast[ptr uint64](cast[pointer](fp + 8))
-    let nextFp = nextFpPtr[]
-    let nextPc = nextRaPtr[]
-    if nextFp <= fp: break
-    fp = nextFp
-    pc = nextPc
-    inc count
-  result = pcsOut
+  {.cast(gcsafe).}:
+    var pcsOut: seq[cuintptr_t] = @[]
+    if maxLength <= 0: return pcsOut
+    var fp = cast[uint64](nframe_get_fp_1())
+    var pc = cast[uint64](nframe_get_ra_1())
+    var count = 0
+    while fp != 0'u64 and pc != 0'u64 and count < maxLength.int:
+      pcsOut.add(cast[cuintptr_t](pc))
+      let nextFpPtr = cast[ptr uint64](cast[pointer](fp))
+      let nextRaPtr = cast[ptr uint64](cast[pointer](fp + 8))
+      let nextFp = nextFpPtr[]
+      let nextPc = nextRaPtr[]
+      if nextFp <= fp: break
+      fp = nextFp
+      pc = nextPc
+      inc count
+    result = pcsOut
 
 proc getBacktrace*(): string {.noinline, gcsafe.} =
-  ## Return a human-readable backtrace string based on SFrame PCs.
-  let pcs = getProgramCounters(64)
-  if pcs.len == 0:
-    return "(no sframe backtrace available)"
-  var lines: seq[string] = @[]
-  var i = 0
-  for pc in pcs:
-    lines.add fmt"  {i:>2}: 0x{cast[uint64](pc).toHex.toLowerAscii()}"
-    inc i
-  result = lines.join("\n")
+  {.cast(gcsafe).}:
+    ## Return a human-readable backtrace string based on SFrame PCs.
+    let pcs = getProgramCounters(64)
+    if pcs.len == 0:
+      return "(no sframe backtrace available)"
+    var lines: seq[string] = @[]
+    var i = 0
+    for pc in pcs:
+      lines.add fmt"  {i:>2}: 0x{cast[uint64](pc).toHex.toLowerAscii()}"
+      inc i
+    result = lines.join("\n")
 
 when defined(nimStackTraceOverride):
   when declared(registerStackTraceOverride):
