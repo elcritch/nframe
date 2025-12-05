@@ -1,13 +1,70 @@
-import std/options
+import std/[options, os, osproc, strutils, sequtils, strformat]
 import sframe
 import sframe/mem_sim
 export mem_sim
 
 type U64Reader* = proc (address: uint64): uint64 {.gcsafe, raises: [], tags: [].}
 
+# Register access utilities for AMD64
+when defined(gcc) or true:
+  {.emit: """
+  static inline void* nframe_get_fp(void) { return __builtin_frame_address(0); }
+  static inline void* nframe_get_ra(void) { return __builtin_return_address(0); }
+  static inline void* nframe_get_sp(void) {
+    void* sp;
+#if defined(__x86_64__) || defined(__amd64__)
+    __asm__ __volatile__("mov %%rsp, %0" : "=r"(sp));
+#elif defined(__aarch64__)
+    __asm__ __volatile__("mov %0, sp" : "=r"(sp));
+#else
+    sp = __builtin_frame_address(0);
+#endif
+    return sp;
+  }
+  """.}
+  proc nframe_get_fp(): pointer {.importc.}
+  proc nframe_get_ra(): pointer {.importc.}
+  proc nframe_get_sp(): pointer {.importc.}
+
 proc readU64Ptr*(address: uint64): uint64 =
   ## Direct memory read helper for stack walking
   cast[ptr uint64](cast[pointer](address))[]
+
+# SFrame section loading utilities
+
+proc getSframeBase*(exe: string): uint64 =
+  ## Get the base address of the .sframe section from an executable
+  let objdump = "/usr/local/bin/x86_64-unknown-freebsd15.0-objdump"
+  let hdr = execProcess(objdump & " -h " & exe)
+  for line in hdr.splitLines():
+    if line.contains(" .sframe ") or (line.contains(".sframe") and line.contains("VMA")):
+      # expect: " 16 .sframe       00000073  0000000000400680 ..."
+      let parts = line.splitWhitespace()
+      if parts.len >= 4:
+        return parseHexInt(parts[3]).uint64
+  return 0'u64
+
+proc loadSframeSection*(exe: string = ""): (SFrameSection, uint64) =
+  ## Load and parse the SFrame section from the current executable or specified path
+  let exePath = if exe.len > 0: exe else: getAppFilename()
+  # Work on a temp copy to avoid Text file busy issues with objcopy on running binary
+  let exeCopy = getTempDir() / "self.copy"
+  try: discard existsOrCreateDir(getTempDir()) except: discard
+  try:
+    copyFile(exePath, exeCopy)
+  except CatchableError:
+    discard
+  # Extract .sframe to a temp path
+  let tmp = getTempDir() / "self.out.sframe"
+  let objcopy = "/usr/local/bin/x86_64-unknown-freebsd15.0-objcopy"
+  let cmd = objcopy & " --dump-section .sframe=" & tmp & " " & exeCopy
+  discard execShellCmd(cmd)
+  let sdata = readFile(tmp)
+  var bytes = newSeq[byte](sdata.len)
+  for i in 0 ..< sdata.len: bytes[i] = byte(sdata[i])
+  let sec = decodeSection(bytes)
+  let sectionBase = getSframeBase(exeCopy)
+  result = (sec, sectionBase)
 
 # Hybrid stack walking for -fomit-frame-pointer scenarios
 
@@ -125,4 +182,67 @@ proc walkStackAmd64WithFallback*(sec: SFrameSection; sectionBase, startPc, start
     fp = nextFp
   result = frames
 
-# readU64Ptr already defined at top of module
+# High-level stack tracing interface
+
+proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64] =
+  ## High-level function to capture a complete stack trace from the current location.
+  ## Returns a sequence of program counter (PC) values representing the call stack.
+  let fp0 = cast[uint64](nframe_get_fp())
+  let sp0 = cast[uint64](nframe_get_sp())
+  let pc0 = cast[uint64](nframe_get_ra())
+
+  if verbose:
+    echo "Starting stack trace from PC: 0x", pc0.toHex(), " SP: 0x", sp0.toHex(), " FP: 0x", fp0.toHex()
+
+  # Load and parse SFrame section
+  let (sec, sectionBase) = loadSframeSection()
+
+  if verbose:
+    echo "SFrame section: base=0x", sectionBase.toHex(), ", ", sec.fdes.len, " functions, ", sec.fres.len, " frame entries"
+    echo "Header: RA offset=", sec.header.cfaFixedRaOffset, ", FP offset=", sec.header.cfaFixedFpOffset
+
+    # Show SFrame data for current PC
+    let (found, fdeIdx, freLocalIdx, freGlobalIdx) = sec.pcToFre(pc0, sectionBase)
+    if found:
+      let fre = sec.fres[freGlobalIdx]
+      let off = freOffsetsForAbi(sframeAbiAmd64Little, sec.header, fre)
+      echo "Found FDE[", fdeIdx, "]: function 0x", sec.funcStartAddress(fdeIdx, sectionBase).toHex()
+      echo "Found FRE[", freLocalIdx, "]: CFA base=", off.cfaBase, ", offset=", off.cfaFromBase
+      let raInfo = if off.raFromCfa.isSome(): $off.raFromCfa.get() else: "fixed"
+      let fpInfo = if off.fpFromCfa.isSome(): $off.fpFromCfa.get() else: "none"
+      echo "RA recovery: ", raInfo
+      echo "FP recovery: ", fpInfo
+    else:
+      echo "No SFrame data found for current PC"
+
+  # Perform stack walking
+  result = walkStackAmd64WithFallback(sec, sectionBase, pc0, sp0, fp0, readU64Ptr, maxFrames)
+
+proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
+  ## Symbolize a stack trace using addr2line to get function names and source locations
+  if frames.len == 0:
+    return @[]
+
+  let exePath = if exe.len > 0: exe else: getAppFilename()
+  let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
+  let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
+  let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
+
+  try:
+    let sym = execProcess(cmd)
+    let lines = sym.splitLines().filterIt(it.len > 0)
+    return lines
+  except CatchableError:
+    return @[]
+
+proc printStackTrace*(frames: seq[uint64]; symbols: seq[string] = @[]) =
+  ## Print a formatted stack trace with optional symbols
+  echo "Stack trace (top->bottom):"
+  for i, pc in frames:
+    echo "  ", ($i).align(2), ": 0x", pc.toHex.toLowerAscii()
+
+  if symbols.len > 0:
+    echo "Symbols:"
+    for i, line in symbols:
+      if i < frames.len:
+        echo "  ", ($i).align(2), ": ", line

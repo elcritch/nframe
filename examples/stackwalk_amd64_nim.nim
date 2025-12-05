@@ -33,7 +33,10 @@ proc deep0() {.noinline.} =
 
 proc deep1() {.noinline.} = deep0()
 proc deep2() {.noinline.} = deep1()
-proc deep3() {.noinline.} = deep2()
+proc deep3() {.noinline.} =
+  for i in 1..10:
+    echo "i: ", $i
+  deep2()
 proc deep4() {.noinline.} = deep3()
 proc deep5() {.noinline.} = deep4()
 proc deep6() {.noinline.} = deep5()
