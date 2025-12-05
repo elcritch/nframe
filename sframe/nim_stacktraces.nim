@@ -13,6 +13,13 @@ when defined(gcc) or true:
   static inline void* nframe_get_ra_0(void) { return __builtin_return_address(0); }
   static inline void* nframe_get_fp_1(void) { return __builtin_frame_address(1); }
   static inline void* nframe_get_ra_1(void) { return __builtin_return_address(1); }
+  static inline void* nframe_get_fp_2(void) { return __builtin_frame_address(2); }
+  static inline void* nframe_get_ra_2(void) { return __builtin_return_address(2); }
+  static inline void* nframe_get_ra_2_safe(void) {
+    void* fp = __builtin_frame_address(2);
+    if (!fp) return (void*)0;
+    return __builtin_return_address(2);
+  }
   static inline void* nframe_get_ip(void) {
     void* ip;
 #if defined(__x86_64__) || defined(__amd64__)
@@ -40,6 +47,9 @@ when defined(gcc) or true:
   proc nframe_get_ra(): pointer {.importc: "nframe_get_ra_0".}
   proc nframe_get_fp_1(): pointer {.importc.}
   proc nframe_get_ra_1(): pointer {.importc.}
+  proc nframe_get_fp_2(): pointer {.importc.}
+  proc nframe_get_ra_2(): pointer {.importc.}
+  proc nframe_get_ra_2_safe(): pointer {.importc.}
   proc nframe_get_ip(): pointer {.importc.}
   proc nframe_get_sp(): pointer {.importc.}
 
@@ -280,16 +290,64 @@ proc getProgramCounters*(maxLength: cint): seq[cuintptr_t] {.noinline, gcsafe, r
 
 proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
   {.cast(gcsafe).}:
-    ## Return a human-readable backtrace string based on SFrame PCs.
-    let pcs = getProgramCounters(64)
-    if pcs.len == 0:
+    ## Return a human-readable backtrace string based on SFrame, normalizing
+    ## each PC to the function start address (objdump symbol address). The
+    ## first entry uses the current instruction pointer so the active frame
+    ## (e.g. deep0) is included.
+    let pcsRa = getProgramCounters(64)
+    if (pcsRa.len == 0) and (not gCache.loaded):
+      return "(no sframe backtrace available)"
+    var normPcs: seq[uint64] = @[]
+    # Prepend current IP mapped to function start to include the active frame
+    # in the output (e.g., deep0 in the example).
+    if gCache.loaded:
+      var addedTop = false
+      # Prefer RA(1) (immediate caller) which often points into the user frame
+      # when a wrapper calls into our override.
+      var (foundTop, fdeIdxTop, _, _) = (false, -1, -1, -1)
+      let ra1 = cast[uint64](nframe_get_ra_1())
+      (foundTop, fdeIdxTop, _, _) = gCache.sec.pcToFre(ra1, gCache.base)
+      if foundTop and fdeIdxTop >= 0:
+        normPcs.add(gCache.sec.funcStartAddress(fdeIdxTop, gCache.base))
+        addedTop = true
+      if not addedTop:
+        # Fallback to RA(0)
+        let ra0 = cast[uint64](nframe_get_ra())
+        (foundTop, fdeIdxTop, _, _) = gCache.sec.pcToFre(ra0, gCache.base)
+        if foundTop and fdeIdxTop >= 0:
+          normPcs.add(gCache.sec.funcStartAddress(fdeIdxTop, gCache.base))
+    # Normalize each collected RA to its function start via SFrame mapping.
+    if gCache.loaded:
+      for pc in pcsRa:
+        let pc64 = cast[uint64](pc)
+        let (found, fdeIdx, _, _) = gCache.sec.pcToFre(pc64, gCache.base)
+        if found and fdeIdx >= 0:
+          normPcs.add(gCache.sec.funcStartAddress(fdeIdx, gCache.base))
+        else:
+          normPcs.add(pc64)
+    # Fallback when cache isn't available: print raw PCs we have.
+    if normPcs.len == 0 and pcsRa.len > 0:
+      for pc in pcsRa:
+        normPcs.add(cast[uint64](pc))
+    if normPcs.len == 0:
       return "(no sframe backtrace available)"
     var lines: seq[string] = @[]
     var i = 0
-    for pc in pcs:
-      lines.add fmt"  {i:>2}: 0x{cast[uint64](pc).toHex.toLowerAscii()}"
+    for pc in normPcs:
+      lines.add fmt"  {i:>2}: 0x{pc.toHex.toLowerAscii()}"
       inc i
     result = lines.join("\n")
+
+proc mapPcToFuncStart*(pc: uint64): uint64 {.gcsafe, raises: [], tags: [].} =
+  ## Map an arbitrary PC to its function start using the loaded SFrame data.
+  ## Returns the input pc if no mapping is found.
+  {.cast(gcsafe).}:
+    if not gCache.loaded:
+      return pc
+    let (found, fdeIdx, _, _) = gCache.sec.pcToFre(pc, gCache.base)
+    if found and fdeIdx >= 0:
+      return gCache.sec.funcStartAddress(fdeIdx, gCache.base)
+    pc
 
 # Provide minimal debugging info mapping: wrap PCs into entries.
 # Leave filename/procname empty to keep this effect-free; symbolization can
