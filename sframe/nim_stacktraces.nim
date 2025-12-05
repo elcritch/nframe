@@ -138,7 +138,30 @@ proc initSFrameCache*() =
 proc buildFramesFrom(startPc, startSp, startFp: uint64; maxFrames: int): seq[uint64] {.raises: [], tags: [].} =
   if not gCache.loaded:
     return @[]
-  result = walkStackAmd64With(gCache.sec, gCache.base, startPc, startSp, startFp, readU64Ptr, maxFrames = maxFrames)
+  # Precompute the initial CFA for startPc so we don't duplicate the first frame
+  # when startSp/startFp do not match startPc's frame (e.g., omit-frame-pointer).
+  var pc = startPc
+  var sp = startSp
+  var fp = startFp
+  block preStep:
+    let (found, _, _, freIdx) = gCache.sec.pcToFre(pc, gCache.base)
+    if not found: break preStep
+    let fre = gCache.sec.fres[freIdx]
+    let off = freOffsetsForAbi(sframeAbiAmd64Little, gCache.sec.header, fre)
+    let baseVal = if off.cfaBase == sframeCfaBaseSp: sp else: fp
+    let cfa = baseVal + uint64(cast[int64](off.cfaFromBase))
+    if off.raFromCfa.isNone(): break preStep
+    let raAddr = cfa + uint64(cast[int64](off.raFromCfa.get()))
+    let nextPc = readU64Ptr(raAddr)
+    if nextPc == 0'u64: break preStep
+    var nextFp = fp
+    if off.fpFromCfa.isSome():
+      let fpAddr = cfa + uint64(cast[int64](off.fpFromCfa.get()))
+      nextFp = readU64Ptr(fpAddr)
+    pc = nextPc
+    sp = cfa
+    fp = nextFp
+  result = walkStackAmd64With(gCache.sec, gCache.base, pc, sp, fp, readU64Ptr, maxFrames = maxFrames)
 
 proc buildCurrentCallerFrames*(maxFrames: int = 32): seq[uint64] {.noinline, gcsafe, raises: [].} =
   ## Capture current frame (this proc) and unwind starting at our caller using SFrame.
