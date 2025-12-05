@@ -1,4 +1,4 @@
-import std/[strformat, strutils]
+import std/[strformat]
 
 # ELF constants and structures based on System V ABI
 const

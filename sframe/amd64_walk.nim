@@ -207,27 +207,14 @@ proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64]
   result = walkStackAmd64WithFallback(sec, sectionBase, pc0, sp0, fp0, readU64Ptr, maxFrames)
 
 proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
-  ## Symbolize a stack trace using addr2line to get function names and source locations.
-  ## Also attempts to use ELF parser for basic function symbol resolution as fallback.
+  ## Symbolize a stack trace using ELF parser for function symbols and addr2line for source locations.
+  ## Uses ELF parser as primary method with addr2line fallback for enhanced source information.
   if frames.len == 0:
     return @[]
 
   let exePath = if exe.len > 0: exe else: getAppFilename()
-  let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
 
-  # Try addr2line first for detailed symbol information
-  if fileExists(addr2):
-    try:
-      let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
-      let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
-      let sym = execProcess(cmd)
-      let lines = sym.splitLines().filterIt(it.len > 0)
-      if lines.len > 0:
-        return lines
-    except CatchableError:
-      discard
-
-  # Fallback: use ELF parser for basic symbol resolution
+  # Primary: use ELF parser for symbol resolution
   try:
     let elf = parseElf(exePath)
     var symbols = newSeq[string](frames.len)
@@ -246,8 +233,37 @@ proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
       if not found:
         symbols[i] = fmt"0x{pc.toHex} (no symbol)"
 
+    # If ELF symbols look good, try to enhance with addr2line source info
+    let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
+    if fileExists(addr2):
+      try:
+        let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
+        let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
+        let sym = execProcess(cmd)
+        let lines = sym.splitLines().filterIt(it.len > 0)
+        # If addr2line gives us good results, prefer those for source location info
+        if lines.len > 0 and lines.len >= frames.len:
+          return lines
+
+      except CatchableError:
+        discard
+
     return symbols
+
   except CatchableError:
+    # Fallback: try addr2line only
+    let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
+    if fileExists(addr2):
+      try:
+        let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
+        let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
+        let sym = execProcess(cmd)
+        let lines = sym.splitLines().filterIt(it.len > 0)
+        if lines.len > 0:
+          return lines
+      except CatchableError:
+        discard
+
     # Last resort: just return hex addresses
     return frames.mapIt(fmt"0x{it.toHex} (no symbol)")
 
