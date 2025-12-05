@@ -1,4 +1,4 @@
-import std/[options, os, osproc, strutils, sequtils, strformat]
+import std/[options, os, strutils, strformat]
 import sframe
 import sframe/mem_sim
 import sframe/elfparser
@@ -217,6 +217,7 @@ proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
   # Primary: use ELF parser for symbol resolution
   let elf = parseElf(exePath)
   var symbols = newSeq[string](frames.len)
+  #let funcSymbols = elf.getDemangledFunctionSymbols()
   let funcSymbols = elf.getFunctionSymbols()
 
   for i, pc in frames:

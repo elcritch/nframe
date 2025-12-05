@@ -1,4 +1,5 @@
 import std/[strformat]
+import sframe/demangler
 
 # ELF constants and structures based on System V ABI
 const
@@ -281,6 +282,15 @@ proc getFunctionSymbols*(elf: ElfFile): seq[ElfSymbol] =
     # This includes compiler-generated functions and internal symbols
     if sym.size > 0 and sym.name.len > 0:
       result.add(sym)
+
+proc getDemangledFunctionSymbols*(elf: ElfFile): seq[ElfSymbol] =
+  ## Get function symbols with demangled names
+  result = @[]
+
+  for sym in elf.getFunctionSymbols():
+    var demangledSym = sym
+    demangledSym.name = demangle(sym.name)
+    result.add(demangledSym)
 
 proc listSections*(elf: ElfFile): seq[string] =
   result = @[]
