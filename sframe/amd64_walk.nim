@@ -49,30 +49,10 @@ proc loadSframeSection*(exe: string = ""): (SFrameSection, uint64) =
   ## Load and parse the SFrame section from the current executable or specified path using ELF parser
   let exePath = if exe.len > 0: exe else: getAppFilename()
 
-  try:
-    let elf = parseElf(exePath)
-    let (sframeData, sframeAddr) = elf.getSframeSection()
-    let sec = decodeSection(sframeData)
-    result = (sec, sframeAddr)
-  except CatchableError as e:
-    # If ELF parsing fails, fall back to the original objcopy method
-    let exeCopy = getTempDir() / "self.copy"
-    try: discard existsOrCreateDir(getTempDir()) except: discard
-    try:
-      copyFile(exePath, exeCopy)
-    except CatchableError:
-      discard
-    # Extract .sframe to a temp path
-    let tmp = getTempDir() / "self.out.sframe"
-    let objcopy = "/usr/local/bin/x86_64-unknown-freebsd15.0-objcopy"
-    let cmd = objcopy & " --dump-section .sframe=" & tmp & " " & exeCopy
-    discard execShellCmd(cmd)
-    let sdata = readFile(tmp)
-    var bytes = newSeq[byte](sdata.len)
-    for i in 0 ..< sdata.len: bytes[i] = byte(sdata[i])
-    let sec = decodeSection(bytes)
-    let sectionBase = getSframeBase(exeCopy)
-    result = (sec, sectionBase)
+  let elf = parseElf(exePath)
+  let (sframeData, sframeAddr) = elf.getSframeSection()
+  let sec = decodeSection(sframeData)
+  result = (sec, sframeAddr)
 
 # Hybrid stack walking for -fomit-frame-pointer scenarios
 
