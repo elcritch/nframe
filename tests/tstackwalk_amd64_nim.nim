@@ -82,14 +82,14 @@ proc parseBacktraceAddrs(output: string): seq[uint64] =
       try:
         let res = parseInt(number[0..^2])
       except:
-        echo "skipping non number prefix: ", cols
+        #echo "skipping non number prefix: ", cols
         continue
 
       let hexPart = cols[1]
       try:
         addrs.add(parseHexInt(hexPart).uint64)
       except CatchableError:
-        echo "skipping non hex addr: ", cols
+        #echo "skipping non hex addr: ", cols
         continue
   result = addrs
 
@@ -107,10 +107,7 @@ suite "Nim override stackwalk (AMD64)":
     check buildExample(exePath)
 
     let deepSyms = parseDeepSymbols(exePath)
-    if deepSyms.len < 7:
-      # If we cannot resolve symbols, don't hard fail; but report.
-      echo "Could not resolve deep symbols via objdump; got ", deepSyms.len, " entries"
-      check deepSyms.len >= 7 # still enforce in CI environments with objdump
+    check deepSyms.len >= 7 # still enforce in CI environments with objdump
 
     echo "Deep syms: "
     for pc, sym in deepSyms:
