@@ -8,6 +8,7 @@ type SymInfo = object
   start: uint64
   size: uint64
   name: string   # function name (eg. "deep1")
+  tok: string
 
 proc chooseTool(cands: openArray[string]): string =
   for p in cands:
@@ -36,47 +37,37 @@ proc buildExample(exeOut: string): bool =
 proc parseDeepSymbols(exe: string): Table[int, SymInfo] =
   ## Use objdump to locate deep0..deep7 symbols with addresses and sizes.
   let objdump = chooseTool([
-    "/usr/bin/objdump",
+    "/usr/local/bin/x86_64-unknown-freebsd15.0-objdump",
     "/usr/local/bin/objdump",
-    "/usr/bin/llvm-objdump",
-    "/usr/local/bin/llvm-objdump",
-    "/usr/local/bin/x86_64-unknown-freebsd15.0-objdump"
+    "/usr/bin/objdump",
   ])
+
   if objdump.len == 0:
     return result
+
   let (code, outp) = runCmd(fmt"{objdump} -t {exe}")
-  if code != 0:
-    return result
-  var tbl: Table[int, SymInfo]
+  doAssert code == 0
+
   for line in outp.splitLines():
     if not line.contains("stackwalk_amd64_nim5deep"): continue
-    # Expected layout (llvm-objdump / objdump):
-    #  0000000000414e61 g     F .text 000000000000000e .hidden _ZN19stackwalk_amd64_nim5deep1E
+
     let cols = line.splitWhitespace()
     if cols.len < 6: continue
     var addrHex = cols[0]
-    var sizeHex = "0"
-    # Find the column that looks like a hex size (16 hex digits) after section
-    # In typical output, it's cols[4]
-    for c in cols:
-      if c.len >= 8 and c.allCharsInSet(Digits + {'a'..'f'} + {'A'..'F'}):
-        # Pick the first long hex token after address
-        if c != addrHex and sizeHex == "0": sizeHex = c
-    # Extract deepN from the mangled name token (last column)
+    var sizeHex = cols[4]
     let symTok = cols[^1]
+
+    # Extract deepN from the mangled name token (last column)
     var nIdx = symTok.find("deep")
-    if nIdx < 0 or nIdx + 4 >= symTok.len: continue
+    doAssert nIdx >= 0 and nIdx + 4 < symTok.len
     let dch = symTok[nIdx + 4]
-    if dch < '0' or dch > '9': continue
+    doAssert dch >= '0' and dch <= '9'
     let n = int(dch) - int('0')
-    try:
-      let start = parseHexInt(addrHex).uint64
-      let size = parseHexInt(sizeHex).uint64
-      let fname = "deep" & $n
-      tbl[n] = SymInfo(start: start, size: size, name: fname)
-    except CatchableError:
-      discard
-  result = tbl
+
+    let start = parseHexInt(addrHex).uint64
+    let size = parseHexInt(sizeHex).uint64
+    let fname = "deep" & $n
+    result[n] = SymInfo(start: start, size: size, name: fname, tok: symTok)
 
 proc parseBacktraceAddrs(output: string): seq[uint64] =
   ## Extract hex addresses from example's backtrace output lines.
