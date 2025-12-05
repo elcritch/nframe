@@ -284,14 +284,42 @@ proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
 # be done by the application outside the override path if desired.
 proc getDebuggingInfo*(programCounters: seq[cuintptr_t], maxLength: cint): seq[StackTraceEntry]
     {.noinline, gcsafe, raises: [], tags: [].} =
+  ## Symbolize program counters to (proc, file, line) using addr2line/llvm-addr2line.
+  ## Uses the main executable as the object file. Returns up to maxLength entries.
+  echo "get debugging info"
   var entries: seq[StackTraceEntry] = @[]
   if programCounters.len == 0 or maxLength <= 0: return entries
   let upto = min(programCounters.len, maxLength.int)
   entries.setLen(upto)
+
+  # Effect-free symbolization via dladdr; yields proc name and image path.
+  type Dl_info {.importc: "Dl_info", header: "dlfcn.h".} = object
+    dli_fname*: cstring
+    dli_fbase*: pointer
+    dli_sname*: cstring
+    dli_saddr*: pointer
+  proc dladdr(paddr: pointer, info: ptr Dl_info): int {.importc: "dladdr", header: "dlfcn.h".}
+
+  proc symbolize(pc: uint64): tuple[procname, file: string, line: int] =
+    var info: Dl_info
+    let res = dladdr(cast[pointer](pc), addr info)
+    if res != 0:
+      let pn = if info.dli_sname.isNil: "" else: $info.dli_sname
+      let fn = if info.dli_fname.isNil: "" else: $info.dli_fname
+      (pn, fn, 0)
+    else:
+      ("", "", 0)
+
   var i = 0
   while i < upto:
-    let pc = programCounters[i]
-    entries[i] = StackTraceEntry(programCounter: cast[uint](pc))
+    let pc = cast[uint64](programCounters[i])
+    let (pn, fl, ln) = symbolize(pc)
+    entries[i] = StackTraceEntry(
+      programCounter: cast[uint](pc),
+      procname: pn,
+      filename: fl,
+      line: ln
+    )
     inc i
   result = entries
 
