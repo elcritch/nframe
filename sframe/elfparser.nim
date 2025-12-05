@@ -1,4 +1,4 @@
-import std/[strformat, os, tables, strutils]
+import std/[strformat, strutils]
 
 # ELF constants and structures based on System V ABI
 const
@@ -277,9 +277,9 @@ proc getFunctionSymbols*(elf: ElfFile): seq[ElfSymbol] =
   result = @[]
 
   for sym in elf.symbols:
-    # Check if it's a function symbol (STT_FUNC = 2)
-    # We'll assume any symbol with non-zero size in text section is a function
-    if sym.size > 0 and sym.name.len > 0 and not sym.name.startsWith("_"):
+    # Include all symbols with size > 0 to get better coverage
+    # This includes compiler-generated functions and internal symbols
+    if sym.size > 0 and sym.name.len > 0:
       result.add(sym)
 
 proc listSections*(elf: ElfFile): seq[string] =

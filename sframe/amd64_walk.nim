@@ -1,6 +1,7 @@
 import std/[options, os, osproc, strutils, sequtils, strformat]
 import sframe
 import sframe/mem_sim
+import sframe/elfparser
 export mem_sim
 
 type U64Reader* = proc (address: uint64): uint64 {.gcsafe, raises: [], tags: [].}
@@ -33,38 +34,45 @@ proc readU64Ptr*(address: uint64): uint64 =
 # SFrame section loading utilities
 
 proc getSframeBase*(exe: string): uint64 =
-  ## Get the base address of the .sframe section from an executable
-  let objdump = "/usr/local/bin/x86_64-unknown-freebsd15.0-objdump"
-  let hdr = execProcess(objdump & " -h " & exe)
-  for line in hdr.splitLines():
-    if line.contains(" .sframe ") or (line.contains(".sframe") and line.contains("VMA")):
-      # expect: " 16 .sframe       00000073  0000000000400680 ..."
-      let parts = line.splitWhitespace()
-      if parts.len >= 4:
-        return parseHexInt(parts[3]).uint64
-  return 0'u64
+  ## Get the base address of the .sframe section from an executable using ELF parser
+  try:
+    let elf = parseElf(exe)
+    let sframeIdx = elf.findSection(".sframe")
+    if sframeIdx >= 0:
+      return elf.sections[sframeIdx].address
+    else:
+      return 0'u64
+  except CatchableError:
+    return 0'u64
 
 proc loadSframeSection*(exe: string = ""): (SFrameSection, uint64) =
-  ## Load and parse the SFrame section from the current executable or specified path
+  ## Load and parse the SFrame section from the current executable or specified path using ELF parser
   let exePath = if exe.len > 0: exe else: getAppFilename()
-  # Work on a temp copy to avoid Text file busy issues with objcopy on running binary
-  let exeCopy = getTempDir() / "self.copy"
-  try: discard existsOrCreateDir(getTempDir()) except: discard
+
   try:
-    copyFile(exePath, exeCopy)
-  except CatchableError:
-    discard
-  # Extract .sframe to a temp path
-  let tmp = getTempDir() / "self.out.sframe"
-  let objcopy = "/usr/local/bin/x86_64-unknown-freebsd15.0-objcopy"
-  let cmd = objcopy & " --dump-section .sframe=" & tmp & " " & exeCopy
-  discard execShellCmd(cmd)
-  let sdata = readFile(tmp)
-  var bytes = newSeq[byte](sdata.len)
-  for i in 0 ..< sdata.len: bytes[i] = byte(sdata[i])
-  let sec = decodeSection(bytes)
-  let sectionBase = getSframeBase(exeCopy)
-  result = (sec, sectionBase)
+    let elf = parseElf(exePath)
+    let (sframeData, sframeAddr) = elf.getSframeSection()
+    let sec = decodeSection(sframeData)
+    result = (sec, sframeAddr)
+  except CatchableError as e:
+    # If ELF parsing fails, fall back to the original objcopy method
+    let exeCopy = getTempDir() / "self.copy"
+    try: discard existsOrCreateDir(getTempDir()) except: discard
+    try:
+      copyFile(exePath, exeCopy)
+    except CatchableError:
+      discard
+    # Extract .sframe to a temp path
+    let tmp = getTempDir() / "self.out.sframe"
+    let objcopy = "/usr/local/bin/x86_64-unknown-freebsd15.0-objcopy"
+    let cmd = objcopy & " --dump-section .sframe=" & tmp & " " & exeCopy
+    discard execShellCmd(cmd)
+    let sdata = readFile(tmp)
+    var bytes = newSeq[byte](sdata.len)
+    for i in 0 ..< sdata.len: bytes[i] = byte(sdata[i])
+    let sec = decodeSection(bytes)
+    let sectionBase = getSframeBase(exeCopy)
+    result = (sec, sectionBase)
 
 # Hybrid stack walking for -fomit-frame-pointer scenarios
 
@@ -219,21 +227,49 @@ proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64]
   result = walkStackAmd64WithFallback(sec, sectionBase, pc0, sp0, fp0, readU64Ptr, maxFrames)
 
 proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
-  ## Symbolize a stack trace using addr2line to get function names and source locations
+  ## Symbolize a stack trace using addr2line to get function names and source locations.
+  ## Also attempts to use ELF parser for basic function symbol resolution as fallback.
   if frames.len == 0:
     return @[]
 
   let exePath = if exe.len > 0: exe else: getAppFilename()
   let addr2 = "/usr/local/bin/x86_64-unknown-freebsd15.0-addr2line"
-  let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
-  let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
 
+  # Try addr2line first for detailed symbol information
+  if fileExists(addr2):
+    try:
+      let addrArgs = frames.mapIt("0x" & it.toHex.toLowerAscii()).join(" ")
+      let cmd = addr2 & " -e " & exePath & " -f -C -p " & addrArgs
+      let sym = execProcess(cmd)
+      let lines = sym.splitLines().filterIt(it.len > 0)
+      if lines.len > 0:
+        return lines
+    except CatchableError:
+      discard
+
+  # Fallback: use ELF parser for basic symbol resolution
   try:
-    let sym = execProcess(cmd)
-    let lines = sym.splitLines().filterIt(it.len > 0)
-    return lines
+    let elf = parseElf(exePath)
+    var symbols = newSeq[string](frames.len)
+    let funcSymbols = elf.getFunctionSymbols()
+
+    for i, pc in frames:
+      var found = false
+      # Find the closest function symbol
+      for sym in funcSymbols:
+        if pc >= sym.value and pc < (sym.value + sym.size):
+          let offset = pc - sym.value
+          symbols[i] = fmt"{sym.name} + 0x{offset.toHex}"
+          found = true
+          break
+
+      if not found:
+        symbols[i] = fmt"0x{pc.toHex} (no symbol)"
+
+    return symbols
   except CatchableError:
-    return @[]
+    # Last resort: just return hex addresses
+    return frames.mapIt(fmt"0x{it.toHex} (no symbol)")
 
 proc printStackTrace*(frames: seq[uint64]; symbols: seq[string] = @[]) =
   ## Print a formatted stack trace with optional symbols
