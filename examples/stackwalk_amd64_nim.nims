@@ -2,8 +2,6 @@
 # Use Nim's stacktrace override instead of default stack traces
 switch("cc", "gcc")
 switch("stackTrace", "off")
-switch("passC", "-fomit-frame-pointer")
 switch("debugger", "native")
 switch("define", "nimStackTraceOverride")
-switch("passC", "-O2 -Wa,--gsframe")
-
+switch("passC", "-O2 -Wa,--gsframe -fomit-frame-pointer")
