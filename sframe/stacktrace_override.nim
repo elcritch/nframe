@@ -17,14 +17,6 @@ proc getProgramCountersOverride*(
 
 #let pc: StackTraceOverrideGetProgramCountersProc* = proc (maxLength: cint): seq[cuintptr_t] {. nimcall, gcsafe, raises: [], tags: [], noinline.}
  
-proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
-  {.cast(gcsafe).}:
-    let frames = captureStackTrace()
-    var s = ""
-    for frame in frames:
-      s.add(fmt"0x{frame.toHex()}\n")
-    return s
-
 proc getDebuggingInfo*(programCounters: seq[cuintptr_t], maxLength: cint): seq[StackTraceEntry]
     {.noinline, gcsafe, raises: [], tags: [].} =
   {.cast(gcsafe).}:
@@ -45,6 +37,15 @@ proc getDebuggingInfo*(programCounters: seq[cuintptr_t], maxLength: cint): seq[S
       entry.procname = sym
       resultEntries.add(entry)
     return resultEntries
+
+proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
+  {.cast(gcsafe).}:
+    let frames = captureStackTrace()
+    var s = ""
+    for frame in frames:
+      s.add(fmt"0x{frame.toHex()}")
+      s.add("\n")
+    return s
 
 when defined(nimStackTraceOverride):
   when declared(registerStackTraceOverrideGetProgramCounters):
