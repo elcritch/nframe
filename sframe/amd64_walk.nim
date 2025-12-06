@@ -4,6 +4,38 @@ import sframe/mem_sim
 import sframe/elfparser
 export mem_sim
 
+# Global variables to hold ELF and SFrame data
+var
+  gSframeSection: SFrameSection
+  gSframeSectionBase: uint64
+  gFuncSymbols: seq[ElfSymbol]
+  gInitialized = false
+
+proc initStackframes*() =
+  ## Initializes global SFrame and symbol data from the current executable.
+  if gInitialized: return
+
+  let exePath = getAppFilename()
+  try:
+    let elf = parseElf(exePath)
+
+    # Load SFrame section
+    let (sframeData, sframeAddr) = elf.getSframeSection()
+    if sframeData.len > 0:
+      gSframeSection = decodeSection(sframeData)
+      gSframeSectionBase = sframeAddr
+
+    # Load symbols
+    gFuncSymbols = elf.getDemangledFunctionSymbols()
+  except CatchableError as e:
+    # In case of error, we can't do much. The stack trace will be less informative.
+    echo "NFrame: Error during initialization: ", e.msg
+
+  gInitialized = true
+
+
+initStackframes()
+
 type U64Reader* = proc (address: uint64): uint64 {.gcsafe, raises: [], tags: [].}
 
 # Register access utilities for AMD64
@@ -175,6 +207,7 @@ proc walkStackAmd64WithFallback*(sec: SFrameSection; sectionBase, startPc, start
 proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64] =
   ## High-level function to capture a complete stack trace from the current location.
   ## Returns a sequence of program counter (PC) values representing the call stack.
+
   let fp0 = cast[uint64](nframe_get_fp())
   let sp0 = cast[uint64](nframe_get_sp())
   let pc0 = cast[uint64](nframe_get_ra())
@@ -182,8 +215,13 @@ proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64]
   if verbose:
     echo "Starting stack trace from PC: 0x", pc0.toHex(), " SP: 0x", sp0.toHex(), " FP: 0x", fp0.toHex()
 
-  # Load and parse SFrame section
-  let (sec, sectionBase) = loadSframeSection()
+  if gSframeSection.fdes.len == 0:
+    if verbose: echo "SFrame section not found or empty. Cannot walk stack."
+    return @[pc0]
+
+  # Use global SFrame section
+  let sec = gSframeSection
+  let sectionBase = gSframeSectionBase
 
   if verbose:
     echo "SFrame section: base=0x", sectionBase.toHex(), ", ", sec.fdes.len, " functions, ", sec.fres.len, " frame entries"
@@ -212,13 +250,24 @@ proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
   if frames.len == 0:
     return @[]
 
-  let exePath = if exe.len > 0: exe else: getAppFilename()
+  var funcSymbols: seq[ElfSymbol]
+  if exe.len > 0:
+    # External executable, load its symbols
+    try:
+      let elf = parseElf(exe)
+      funcSymbols = elf.getDemangledFunctionSymbols()
+    except CatchableError as e:
+      echo "NFrame: Error parsing external executable: ", e.msg
+      var symbols = newSeq[string](frames.len)
+      for i, pc in frames:
+        symbols[i] = fmt"0x{pc.toHex} (error loading symbols from {exe})"
+      return symbols
+  else:
+    # Use pre-loaded symbols for current executable
+    initStackframes()
+    funcSymbols = gFuncSymbols
 
-  # Primary: use ELF parser for symbol resolution
-  let elf = parseElf(exePath)
   var symbols = newSeq[string](frames.len)
-  let funcSymbols = elf.getDemangledFunctionSymbols()
-  #let funcSymbols = elf.getFunctionSymbols()
 
   for i, pc in frames:
     var found = false
