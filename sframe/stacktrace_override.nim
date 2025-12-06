@@ -9,12 +9,31 @@ when defined(nimStackTraceOverride) and defined(nimHasStacktracesModule):
 
 proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
   {.cast(gcsafe).}:
-    discard
+    let frames = captureStackTrace()
+    var s = ""
+    for frame in frames:
+      s.add(fmt"0x{frame.toHex()}\n")
+    return s
 
 proc getDebuggingInfo*(programCounters: seq[cuintptr_t], maxLength: cint): seq[StackTraceEntry]
     {.noinline, gcsafe, raises: [], tags: [].} =
   {.cast(gcsafe).}:
-    discard
+    var frames: seq[uint64] = @[]
+    for pc in programCounters:
+      frames.add cast[uint64](pc)
+
+    # Ensure we don't exceed maxLength if it's specified
+    if maxLength > 0 and frames.len > maxLength:
+      frames.setLen(maxLength)
+
+    let symbols = symbolizeStackTrace(frames, gFuncSymbols)
+
+    var resultEntries: seq[StackTraceEntry] = @[]
+    for sym in symbols:
+      var entry: StackTraceEntry
+      entry.procname = sym
+      resultEntries.add(entry)
+    return resultEntries
 
 when defined(nimStackTraceOverride):
   #when declared(registerStackTraceOverrideGetProgramCounters):

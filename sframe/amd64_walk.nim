@@ -6,10 +6,10 @@ export mem_sim
 
 # Global variables to hold ELF and SFrame data
 var
-  gSframeSection: SFrameSection
-  gSframeSectionBase: uint64
-  gFuncSymbols: seq[ElfSymbol]
-  gInitialized = false
+  gSframeSection*: SFrameSection
+  gSframeSectionBase*: uint64
+  gFuncSymbols*: seq[ElfSymbol]
+  gInitialized*: bool = false
 
 proc initStackframes*() =
   ## Initializes global SFrame and symbol data from the current executable.
