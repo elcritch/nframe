@@ -11,7 +11,7 @@ proc getProgramCountersOverride*(
 ): seq[cuintptr_t] {.nimcall, gcsafe, raises: [], tags: [], noinline.} =
   let frames = captureStackTrace(maxLength)
   var resultFrames = newSeq[cuintptr_t](frames.len)
-  for i, frame in frames:
+  for i, frame in frames[10..^1]:
     resultFrames[i] = cast[cuintptr_t](frame)
   return resultFrames
 
