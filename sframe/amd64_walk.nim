@@ -198,7 +198,7 @@ proc captureStackTrace*(maxFrames: int = 64): seq[uint64] {.raises: [], gcsafe.}
     result = walkStackAmd64WithFallback(gSframeSection, gSframeSectionBase, pc0, sp0, fp0, readU64Ptr, maxFrames)
 
 proc symbolizeStackTrace*(
-    frames: seq[uint64]; funcSymbols: openArray[ElfSymbol]
+    frames: openArray[uint64]; funcSymbols: openArray[ElfSymbol]
 ): seq[string] {.raises: [], gcsafe.} =
   ## Symbolize a stack trace using ELF parser for function symbols and addr2line for source locations.
   ## Uses ELF parser as primary method with addr2line fallback for enhanced source information.
@@ -224,10 +224,10 @@ proc symbolizeStackTrace*(
 
   return symbols
 
-proc symbolizeStackTrace*(frames: seq[uint64]): seq[string] =
+proc symbolizeStackTrace*(frames: openArray[uint64]): seq[string] =
   symbolizeStackTrace(frames, gFuncSymbols)
 
-proc printStackTrace*(frames: seq[uint64]; symbols: seq[string] = @[]) =
+proc printStackTrace*(frames: openArray[uint64]; symbols: openArray[string] = @[]) =
   ## Print a formatted stack trace with optional symbols
   echo "Stack trace (top->bottom):"
   for i, pc in frames:
