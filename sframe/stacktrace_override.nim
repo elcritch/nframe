@@ -9,12 +9,11 @@ when defined(nimStackTraceOverride) and defined(nimHasStacktracesModule):
 proc getProgramCountersOverride*(
     maxLength: cint
 ): seq[cuintptr_t] {.nimcall, gcsafe, raises: [], tags: [], noinline.} =
-  #let frames = captureStackTrace()
-  #programCounters.setLen(0)
-  #for frame in frames:
-  #  programCounters.add(cast[pointer](frame))
-  #return true
-  discard
+  let frames = captureStackTrace(maxLength)
+  var resultFrames = newSeq[cuintptr_t](frames.len)
+  for i, frame in frames:
+    resultFrames[i] = cast[cuintptr_t](frame)
+  return resultFrames
 
 #let pc: StackTraceOverrideGetProgramCountersProc* = proc (maxLength: cint): seq[cuintptr_t] {. nimcall, gcsafe, raises: [], tags: [], noinline.}
  
