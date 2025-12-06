@@ -10,9 +10,9 @@ proc getProgramCountersOverride*(
     maxLength: cint
 ): seq[cuintptr_t] {.nimcall, gcsafe, raises: [], tags: [], noinline.} =
   let frames = captureStackTrace(maxLength)
-  var resultFrames = newSeq[cuintptr_t](frames.len)
-  for i, frame in frames[10..^1]:
-    resultFrames[i] = cast[cuintptr_t](frame)
+  var resultFrames = newSeqOfCap[cuintptr_t](frames.len()-8)
+  for i in 10..<frames.len():
+    resultFrames.add cast[cuintptr_t](frames[i])
   return resultFrames
 
 #let pc: StackTraceOverrideGetProgramCountersProc* = proc (maxLength: cint): seq[cuintptr_t] {. nimcall, gcsafe, raises: [], tags: [], noinline.}
@@ -55,6 +55,7 @@ proc unhandledExceptionOverride(e: ref Exception) {.nimcall, tags: [], raises: [
 when defined(nimStackTraceOverride):
 
   system.unhandledExceptionHook = unhandledExceptionOverride
+
   when declared(registerStackTraceOverrideGetProgramCounters):
     registerStackTraceOverrideGetProgramCounters(getProgramCountersOverride)
   when declared(registerStackTraceOverride):
