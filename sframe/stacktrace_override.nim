@@ -6,7 +6,18 @@ import sframe/amd64_walk
 when defined(nimStackTraceOverride) and defined(nimHasStacktracesModule):
   import system/stacktraces
 
+proc getProgramCountersOverride*(
+    maxLength: cint
+): seq[cuintptr_t] {.nimcall, gcsafe, raises: [], tags: [], noinline.} =
+  #let frames = captureStackTrace()
+  #programCounters.setLen(0)
+  #for frame in frames:
+  #  programCounters.add(cast[pointer](frame))
+  #return true
+  discard
 
+#let pc: StackTraceOverrideGetProgramCountersProc* = proc (maxLength: cint): seq[cuintptr_t] {. nimcall, gcsafe, raises: [], tags: [], noinline.}
+ 
 proc getBacktrace*(): string {.noinline, gcsafe, raises: [], tags: [].} =
   {.cast(gcsafe).}:
     let frames = captureStackTrace()
@@ -36,8 +47,8 @@ proc getDebuggingInfo*(programCounters: seq[cuintptr_t], maxLength: cint): seq[S
     return resultEntries
 
 when defined(nimStackTraceOverride):
-  #when declared(registerStackTraceOverrideGetProgramCounters):
-  #  registerStackTraceOverrideGetProgramCounters(getProgramCounters)
+  when declared(registerStackTraceOverrideGetProgramCounters):
+    registerStackTraceOverrideGetProgramCounters(getProgramCountersOverride)
   when declared(registerStackTraceOverride):
     registerStackTraceOverride(getBacktrace)
   when declared(registerStackTraceOverrideGetDebuggingInfo):
