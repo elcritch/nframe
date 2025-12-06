@@ -244,28 +244,12 @@ proc captureStackTrace*(maxFrames: int = 16; verbose: bool = false): seq[uint64]
   # Perform stack walking
   result = walkStackAmd64WithFallback(sec, sectionBase, pc0, sp0, fp0, readU64Ptr, maxFrames)
 
-proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
+proc symbolizeStackTrace*(frames: seq[uint64]; funcSymbols: openArray[ElfSymbol]): seq[string] =
   ## Symbolize a stack trace using ELF parser for function symbols and addr2line for source locations.
   ## Uses ELF parser as primary method with addr2line fallback for enhanced source information.
   if frames.len == 0:
     return @[]
 
-  var funcSymbols: seq[ElfSymbol]
-  if exe.len > 0:
-    # External executable, load its symbols
-    try:
-      let elf = parseElf(exe)
-      funcSymbols = elf.getDemangledFunctionSymbols()
-    except CatchableError as e:
-      echo "NFrame: Error parsing external executable: ", e.msg
-      var symbols = newSeq[string](frames.len)
-      for i, pc in frames:
-        symbols[i] = fmt"0x{pc.toHex} (error loading symbols from {exe})"
-      return symbols
-  else:
-    # Use pre-loaded symbols for current executable
-    initStackframes()
-    funcSymbols = gFuncSymbols
 
   var symbols = newSeq[string](frames.len)
 
@@ -284,6 +268,9 @@ proc symbolizeStackTrace*(frames: seq[uint64]; exe: string = ""): seq[string] =
 
 
   return symbols
+
+proc symbolizeStackTrace*(frames: seq[uint64]): seq[string] =
+  symbolizeStackTrace(frames, gFuncSymbols)
 
 proc printStackTrace*(frames: seq[uint64]; symbols: seq[string] = @[]) =
   ## Print a formatted stack trace with optional symbols
